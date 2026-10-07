@@ -4,6 +4,7 @@ const path = require('path');
 const os = require('os');
 const { Rules } = require('./rules');
 const { SessionMonitor } = require('./monitor');
+const { DbWatch } = require('./dbwatch');
 const { Recover } = require('./recover');
 const { Notifier } = require('./notify');
 const { State } = require('./state');
@@ -53,6 +54,7 @@ async function main() {
 
   const rules = new Rules(rulesFile);
   const monitor = new SessionMonitor(codexHome);
+  const dbwatch = new DbWatch(codexHome);
   const state = new State(stateDir);
   const notifier = new Notifier({ webhook: a.webhook, ntfy: a.ntfy, quiet: a.quiet });
   const recover = new Recover({ rules, state, notifier, codexBin: a['codex-bin'] || 'codex', dryRun: !!a['dry-run'] });
@@ -75,6 +77,18 @@ async function main() {
       for (const s of monitor.stalledThreads(rules.stallAfterMs)) {
         recover.onStall(s.threadId, rules.cfg.stall, s.idleMs);
       }
+    }
+    // Structured layer: ~/.codex SQLite stores (logs/goals/threads).
+    const db = dbwatch.poll();
+    if (db.disabled && a.verbose) console.log(`[dbwatch] disabled: ${db.disabled}`);
+    for (const ev of db.events) {
+      if (ev.kind === 'thread') { recover.onActivity(ev.threadId); continue; }
+      const rule = rules.match(ev.text);
+      if (a.verbose) console.log(`[db:${ev.kind}] ${ev.threadId.slice(0, 8)}${ev.replay ? ' (replay)' : ''} rule=${rule ? rule.name : '-'}`);
+      if (rule) recover.onFailure(ev.threadId, rule, ev.text);
+    }
+    for (const s of dbwatch.staleThreads(rules.stallAfterMs)) {
+      recover.onStall(s.threadId, rules.cfg.stall || { action: 'notify' }, s.idleMs);
     }
     await recover.tick(monitor);
   }

@@ -6,16 +6,21 @@ Leave a Codex task running overnight. When the stream disconnects, the usage lim
 
 ## How it works
 
+Two detection layers (structured first, text as fallback):
+
 ```
-~/.codex/sessions/**/rollout-*.jsonl   (tailed every 15s)
-        │  each new line → rules.json (hot-reloaded)
+~/.codex/*.sqlite    logs_2: per-thread ERROR/WARN rows → rules engine
+  (if Python present) goals_1: thread_goals.status = usageLimited → /goal resume
+                      state_5: threads.updated_at_ms → activity + stall + verify
+~/.codex/sessions/**/rollout-*.jsonl   (always on — tail + tail-replay on startup)
+        │  every signal → rules.json (hot-reloaded)
         ▼
   failure class → action
         │  wait_reset: extract resets_at, queue at reset+2min
         │  queue:      codex queue --thread <UUID> --message "Continue"
         │  notify:     alert only        ignore: fail-closed, never retry
         ▼
-  verify: new rollout events within 5min → recovered ✓
+  verify: new rollout/log/thread activity within 5min → recovered ✓
         │  nothing → retry (max 3) → still nothing → "GAVE UP" notification
 ```
 
@@ -45,6 +50,12 @@ node src/cli.js watch --dry-run --verbose
 
 Keep it on for a day and check the log — it shows every rollout line's rule verdict without touching anything. When it looks right, drop `--dry-run`.
 
+**Autostart on Windows** (survives logout/reboot for overnight runs):
+
+```powershell
+schtasks /create /tn agentwatch /tr "node C:\path\to\agentwatch\src\cli.js watch" /sc onlogon /rl limited
+```
+
 ## Detection coverage (rules.json)
 
 | failure | examples matched | action |
@@ -63,12 +74,13 @@ Rules are plain JSON, hot-reloaded — add new Codex error wordings without rest
 ## Honest limitations
 
 - `codex queue` delivers only while the app-server still has the thread — i.e. Codex Desktop/CLI must currently hold that conversation open. If the app was restarted, open the conversation once and the watchdog continues on its own.
-- Detection reads rollout JSONL — the schema is unofficial and drifts. Rules match on message text, not fixed field paths, but check `watch --verbose` after a Codex update.
+- The SQLite layer needs a `python`/`python3`/`py` on PATH (read-only `mode=ro`, WAL-safe). Without it, detection falls back to rollout tailing — same failures caught, slightly coarser.
+- The rollout schema and DB table names are unofficial and drift — rules match on message text, not fixed field paths, but check `watch --verbose` after a Codex update.
 
 ## Test
 
 ```bash
-node test/run.js   # 16 checks: detect→schedule→resume→verify→notify, fail-closed, give-up
+node test/run.js   # 23 checks: rollout+DB detect→schedule→resume→verify→notify, fail-closed, give-up
 ```
 
 Uses a fake `codex` shim + synthetic rollouts — no Codex install needed.

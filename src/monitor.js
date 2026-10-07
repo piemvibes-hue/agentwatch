@@ -19,8 +19,8 @@ function* walk(dir) {
 class SessionMonitor {
   constructor(codexHome) {
     this.sessionsDir = path.join(codexHome, 'sessions');
-    // threadId -> { file, offset, lastLineAt, lastLine, lastParsed, seenActive }
-    this.threads = new Map();
+    // file -> { offset, lastLineAt, lastLine, lastParsed, seenActive, threadId }
+    this.files = new Map();
   }
 
   // One scan+tail cycle. Returns array of {threadId, file, line, parsed}.
@@ -30,10 +30,10 @@ class SessionMonitor {
     for (const file of files) {
       const m = ROLLOUT_RE.exec(file);
       const threadId = m ? m[1] : file;
-      let t = this.threads.get(threadId);
+      let t = this.files.get(file);
       if (!t) {
-        t = { file, offset: 0, lastLineAt: 0, lastLine: null, lastParsed: null, seenActive: false };
-        this.threads.set(threadId, t);
+        t = { offset: 0, lastLineAt: 0, lastLine: null, lastParsed: null, seenActive: false, threadId };
+        this.files.set(file, t);
         // First sight: don't replay history, but DO inspect the tail so a thread
         // that died before we started (the overnight case) can be recovered.
         try {
@@ -51,6 +51,7 @@ class SessionMonitor {
       }
       let size;
       try { size = fs.statSync(file).size; } catch { continue; }
+      t.threadId = threadId; // keep current (unchanged, but explicit)
       if (size < t.offset) t.offset = 0; // truncated/rotated
       if (size === t.offset) continue;
       const fd = fs.openSync(file, 'r');
@@ -115,15 +116,17 @@ class SessionMonitor {
 
   // Thread snapshot for stall detection.
   snapshot(threadId) {
-    return this.threads.get(threadId) || null;
+    for (const t of this.files.values()) if (t.threadId === threadId) return t;
+    return null;
   }
 
   // Threads that were active before but produced nothing for >ms.
   // maxIdleMs caps how old a stall can be before we give up on it entirely.
+  // Emits at most one stall per thread (the freshest file wins).
   stalledThreads(ms, maxIdleMs = 12 * 60 * 60 * 1000) {
     const now = Date.now();
-    const out = [];
-    for (const [threadId, t] of this.threads) {
+    const byThread = new Map();
+    for (const [file, t] of this.files) {
       if (!t.seenActive || !t.lastLineAt) continue;
       const idle = now - t.lastLineAt;
       if (idle < ms || idle > maxIdleMs) continue;
@@ -131,15 +134,20 @@ class SessionMonitor {
       const s = (t.lastLine || '').toLowerCase();
       const terminal = ['turn_complete', 'task_complete', 'session_end', '"type":"shutdown"', 'usage limit', 'stream disconnected', 'error'];
       if (terminal.some(x => s.includes(x))) continue;
-      out.push({ threadId, file: t.file, idleMs: now - t.lastLineAt, lastLine: t.lastLine });
+      const cur = byThread.get(t.threadId);
+      if (!cur || idle < cur.idleMs) byThread.set(t.threadId, { threadId: t.threadId, file, idleMs: idle, lastLine: t.lastLine });
     }
-    return out;
+    return [...byThread.values()];
   }
 
   listThreads() {
-    return [...this.threads.entries()].map(([id, t]) => ({
-      threadId: id, file: t.file, lastLineAt: t.lastLineAt, seenActive: t.seenActive,
-    }));
+    const seen = new Map();
+    for (const [file, t] of this.files) {
+      if (!seen.has(t.threadId) || t.lastLineAt > seen.get(t.threadId).lastLineAt) {
+        seen.set(t.threadId, { threadId: t.threadId, file, lastLineAt: t.lastLineAt, seenActive: t.seenActive });
+      }
+    }
+    return [...seen.values()];
   }
 }
 

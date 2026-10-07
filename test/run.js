@@ -34,9 +34,27 @@ const testRules = {
   rules: [
     { name: 'usage_limit', contains: ['usage limit'], extractReset: 'try again at ([^\"]+)', action: 'wait_reset', fallbackDelayMs: 80 },
     { name: 'stream_disconnected', contains: ['stream disconnected before completion'], action: 'queue', delayMs: 50 },
+    { name: 'goal_usage_limited', contains: ['usagelimited'], action: 'queue', message: '/goal resume', delayMs: 30 },
     { name: 'never_retry', contains: ['authentication failed'], action: 'ignore' },
   ],
 };
+
+const PY_MKDB = `
+import sqlite3, sys, os, time
+home = sys.argv[1]
+con = sqlite3.connect(os.path.join(home, 'logs_2.sqlite'))
+con.execute("CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY, ts TEXT, level TEXT, target TEXT, feedback_log_body TEXT, thread_id TEXT)")
+con.execute("INSERT INTO logs (ts, level, thread_id, feedback_log_body) VALUES (datetime('now'), 'ERROR', ?, ?)", (sys.argv[2], sys.argv[3]))
+con.commit(); con.close()
+con = sqlite3.connect(os.path.join(home, 'goals_1.sqlite'))
+con.execute("CREATE TABLE IF NOT EXISTS thread_goals (thread_id TEXT, goal_id TEXT, status TEXT, tokens_used INT, token_budget INT)")
+con.execute("INSERT INTO thread_goals VALUES (?, 'g1', 'usageLimited', 100, 1000)", (sys.argv[4],))
+con.commit(); con.close()
+con = sqlite3.connect(os.path.join(home, 'state_5.sqlite'))
+con.execute("CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, title TEXT, updated_at_ms INT, recency_at_ms INT, tokens_used INT)")
+con.execute("INSERT OR REPLACE INTO threads VALUES (?, 't', ?, ?, 0)", (sys.argv[5], int(time.time()*1000)-60000, int(time.time()*1000)-60000))
+con.commit(); con.close()
+`;
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 let passed = 0, failed = 0;
@@ -134,6 +152,38 @@ async function main() {
   await sleep(100);
   ok(state.t(TID3).status === 'dead', 'gave up after maxAttempts');
   ok(notifier.log.some(n => n.text.includes('GAVE UP') && n.text.includes(TID3.slice(0, 8))), 'escalation notification emitted for TID3');
+
+  console.log('== dbwatch: sqlite signals ==');
+  const { DbWatch } = require('../src/dbwatch');
+  const TID4 = 'eeeeeeee-1111-4222-8333-444444444444';
+  const TID5 = '55555555-6666-4777-8888-999999999999';
+  if (new DbWatch(codexHome).pyBin) {
+    execFileSync('python', ['-c', PY_MKDB, codexHome, TID4, 'stream disconnected before completion: boom', TID5, TID4], { timeout: 15000 });
+    const dbwatch = new DbWatch(codexHome);
+    let dbev = dbwatch.poll();
+    ok(dbev.events.some(e => e.kind === 'log' && e.threadId === TID4), 'logs_2 ERROR row detected for thread');
+    ok(dbev.events.some(e => e.kind === 'goal' && e.threadId === TID5 && /usageLimited/i.test(e.status)), 'goal usageLimited detected');
+    for (const ev of dbev.events) {
+      if (ev.kind === 'thread') { recover.onActivity(ev.threadId); continue; }
+      const rule = rules.match(ev.text);
+      if (rule) recover.onFailure(ev.threadId, rule, ev.text);
+    }
+    ok(state.t(TID4).status === 'scheduled', 'db log failure scheduled');
+    ok(state.t(TID5).status === 'scheduled' && state.t(TID5).message === '/goal resume', 'goal resume message scheduled');
+    await sleep(140); await recover.tick(monitor); await sleep(120);
+    const calls3 = fs.readFileSync(callsLog, 'utf8');
+    ok(calls3.includes(`--thread ${TID4}`) && calls3.includes(`--thread ${TID5}`), 'db-driven resumes fired');
+    ok(calls3.includes('/goal resume'), 'goal resume message sent');
+    // thread activity via DB -> recovered
+    execFileSync('python', ['-c',
+      `import sqlite3,sys,time;con=sqlite3.connect(sys.argv[1]+'/state_5.sqlite');con.execute("UPDATE threads SET updated_at_ms=?",(int(time.time()*1000),));con.commit()`,
+      codexHome], { timeout: 15000 });
+    dbev = dbwatch.poll();
+    for (const ev of dbev.events) if (ev.kind === 'thread') recover.onActivity(ev.threadId);
+    ok(state.t(TID4).status === 'ok', 'db activity marks recovery');
+  } else {
+    console.log('  (skipped: no python)');
+  }
 
   console.log('== cli smoke ==');
   const out = execFileSync(process.execPath, [path.join(__dirname, '..', 'src', 'cli.js'), 'scan',
