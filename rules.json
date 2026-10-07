@@ -8,6 +8,7 @@
   "maxAttempts": 3,
   "resumeMessage": "Continue",
   "goalResumeMessage": "/goal resume",
+  "recoveryMethod": "auto",
   "rules": [
     {
       "name": "usage_limit",
@@ -16,6 +17,20 @@
       "extractReset": "resets?_?(?:at|_at)?[\"':\\s]+([0-9T:Z+\\-\\.apmAPM ]+|\\d{13}|\\d{4}-\\d{2}-\\d{2}[T ][0-9:.+-Z]+)",
       "action": "wait_reset",
       "fallbackDelayMs": 3600000
+    },
+    {
+      "name": "permanent_error",
+      "contains": [
+        "model_not_found",
+        "无可用渠道",
+        "insufficient_quota",
+        "account_frozen",
+        "invalid api key",
+        "authentication failed",
+        "unauthorized"
+      ],
+      "action": "notify",
+      "comment": "Config/account problems: re-running the same resume command cannot help. Alert immediately instead of retrying."
     },
     {
       "name": "stream_disconnected",
@@ -74,10 +89,7 @@
         "permission denied",
         "content policy",
         "flagged for possible",
-        "context length",
-        "invalid api key",
-        "authentication failed",
-        "unauthorized"
+        "context length"
       ],
       "action": "ignore"
     }

@@ -4,13 +4,14 @@ const { spawn } = require('child_process');
 // Recovery engine: decides actions per rule, schedules them, executes
 // `codex queue`, then verifies the thread actually resumed producing events.
 class Recover {
-  constructor({ rules, state, notifier, codexBin = 'codex', dryRun = false, log = console.log }) {
+  constructor({ rules, state, notifier, codexBin = 'codex', dryRun = false, log = console.log, sourceOf = null }) {
     this.rules = rules;
     this.state = state;
     this.notifier = notifier;
     this.codexBin = codexBin;
     this.dryRun = dryRun;
     this.log = log;
+    this.sourceOf = sourceOf; // fn(threadId) -> 'exec'|'app'|'' (dbwatch threads.source)
     this.graceMs = 2 * 60 * 1000;
   }
 
@@ -28,7 +29,9 @@ class Recover {
         this.log(`[ignore] ${threadId.slice(0, 8)} matched never-retry rule ${rule.name}`);
         return;
       case 'notify':
+        if (st.status === 'notify' && st.lastRule === rule.name) return; // already alerted, don't spam
         st.status = 'notify';
+        st.lastRule = rule.name;
         this.state.save();
         this.notifier.send(`agentwatch: ${rule.name} on ${threadId.slice(0, 8)}`, text.slice(0, 300));
         return;
@@ -96,19 +99,40 @@ class Recover {
     }
   }
 
+  // Recovery command routing: 'queue' enqueues a message for a thread that is
+  // open in some Codex surface (Desktop/TUI/app-server — verified: the message
+  // lands in queue_1.sqlite and only fires when that surface consumes it).
+  // 'exec-resume' runs `codex exec resume <id> <msg>` — actually re-executes a
+  // turn in a fresh process, which is the only way to revive threads no app
+  // has open (headless exec runs, orphaned corpses). cfg.recoveryMethod:
+  // 'auto' (default) picks exec-resume for source=exec threads, else queue.
+  _method(threadId) {
+    const m = (this.rules.cfg.recoveryMethod || 'auto').toLowerCase();
+    if (m === 'queue' || m === 'exec-resume') return m;
+    return this.sourceOf && this.sourceOf(threadId) === 'exec' ? 'exec-resume' : 'queue';
+  }
+
+  _argv(threadId, msg, method) {
+    return method === 'exec-resume'
+      ? ['exec', 'resume', threadId, msg, '--skip-git-repo-check']
+      : ['queue', '--thread', threadId, '--message', msg];
+  }
+
   async _fire(threadId, st) {
     const msg = st.message || this.rules.resumeMessage;
-    this.log(`[resume] ${threadId.slice(0, 8)} -> codex queue "${msg}"`);
+    const method = this._method(threadId);
+    const argv = this._argv(threadId, msg, method);
+    this.log(`[resume] ${threadId.slice(0, 8)} -> codex ${argv.join(' ')}`);
     st.status = 'verifying';
     st.verifyUntil = Date.now() + this.rules.verifyAfterMs;
     st.updatedAt = Date.now();
     this.state.save();
     if (this.dryRun) {
-      this.log(`[dry-run] would run: ${this.codexBin} queue --thread ${threadId} --message "${msg}"`);
+      this.log(`[dry-run] would run: ${this.codexBin} ${argv.join(' ')}`);
       return;
     }
     const shell = process.platform === 'win32';
-    const child = spawn(this.codexBin, ['queue', '--thread', threadId, '--message', msg], { shell, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(this.codexBin, argv, { shell, stdio: ['ignore', 'pipe', 'pipe'] });
     let err = '';
     child.stderr.on('data', d => { err += d; });
     child.on('error', e => {
@@ -116,7 +140,7 @@ class Recover {
     });
     child.on('exit', code => {
       if (code !== 0) {
-        this.log(`[resume-error] ${threadId.slice(0, 8)} codex queue exited ${code}: ${err.slice(0, 200)}`);
+        this.log(`[resume-error] ${threadId.slice(0, 8)} codex ${method} exited ${code}: ${err.slice(0, 200)}`);
         // force verification to fail fast so we retry sooner
         const s = this.state.t(threadId);
         s.verifyUntil = Math.min(s.verifyUntil, Date.now() + 30000);

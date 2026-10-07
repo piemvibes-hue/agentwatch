@@ -57,7 +57,7 @@ async function main() {
   const dbwatch = new DbWatch(codexHome);
   const state = new State(stateDir);
   const notifier = new Notifier({ webhook: a.webhook, ntfy: a.ntfy, quiet: a.quiet });
-  const recover = new Recover({ rules, state, notifier, codexBin: a['codex-bin'] || 'codex', dryRun: !!a['dry-run'] });
+  const recover = new Recover({ rules, state, notifier, codexBin: a['codex-bin'] || 'codex', dryRun: !!a['dry-run'], sourceOf: tid => dbwatch.sourceOf(tid) });
 
   async function cycle() {
     rules.reload();
@@ -88,6 +88,12 @@ async function main() {
       if (rule) recover.onFailure(ev.threadId, rule, ev.text);
     }
     for (const s of dbwatch.staleThreads(rules.stallAfterMs)) {
+      recover.onStall(s.threadId, rules.cfg.stall || { action: 'notify' }, s.idleMs);
+    }
+    // Orphaned inProgress turns (process died mid-turn): the strongest stall
+    // signal — the turn row itself is the abandoned work.
+    for (const s of dbwatch.orphanTurns(rules.stallAfterMs)) {
+      if (a.verbose) console.log(`[db:orphan] ${s.threadId.slice(0, 8)} turn ${s.turnId.slice(0, 8)} idle ${Math.round(s.idleMs / 60000)}min`);
       recover.onStall(s.threadId, rules.cfg.stall || { action: 'notify' }, s.idleMs);
     }
     await recover.tick(monitor);

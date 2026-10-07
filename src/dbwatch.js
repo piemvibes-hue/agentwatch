@@ -5,14 +5,16 @@ const fs = require('fs');
 
 // Structured detection layer: reads Codex's own SQLite stores under ~/.codex
 // (logs_2.sqlite errors per thread, goals_1.sqlite usageLimited status,
-// state_5.sqlite thread activity). Zero npm deps: queries run through a
-// Python sqlite3 subprocess when Python exists, else this layer disables
-// itself and the rollout-file monitor carries detection alone.
+// state_5.sqlite thread activity + source, thread_history_1.sqlite per-turn
+// status — failed turns carry error_json; orphaned inProgress turns = died
+// mid-run). Zero npm deps: queries run through a Python sqlite3 subprocess
+// when Python exists, else this layer disables itself and the rollout-file
+// monitor carries detection alone.
 
 const PY = `
 import sqlite3, json, sys, os
 home, last_log_id = sys.argv[1], int(sys.argv[2])
-out = {"logs": [], "goals": [], "threads": [], "max_log_id": last_log_id, "dbs": []}
+out = {"logs": [], "goals": [], "threads": [], "turns": [], "max_log_id": last_log_id, "dbs": []}
 def q(db, sql, args=()):
     p = os.path.join(home, db)
     if not os.path.exists(p): return
@@ -36,10 +38,18 @@ if rows is not None:
     for r in rows:
         out["goals"].append({"thread_id": r[0], "goal_id": r[1], "status": r[2], "tokens_used": r[3], "token_budget": r[4]})
 rows = q("state_5.sqlite",
-  "SELECT id, COALESCE(title,''), COALESCE(updated_at_ms,0), COALESCE(recency_at_ms,0), COALESCE(tokens_used,0) FROM threads")
+  "SELECT id, COALESCE(title,''), COALESCE(updated_at_ms,0), COALESCE(recency_at_ms,0), COALESCE(tokens_used,0), COALESCE(source,'') FROM threads")
+if rows is None:  # older codex: threads table predates the source column
+    rows = q("state_5.sqlite",
+      "SELECT id, COALESCE(title,''), COALESCE(updated_at_ms,0), COALESCE(recency_at_ms,0), COALESCE(tokens_used,0), '' FROM threads")
 if rows is not None:
     for r in rows:
-        out["threads"].append({"id": r[0], "title": r[1], "updated_ms": r[2], "recency_ms": r[3], "tokens_used": r[4]})
+        out["threads"].append({"id": r[0], "title": r[1], "updated_ms": r[2], "recency_ms": r[3], "tokens_used": r[4], "source": r[5]})
+rows = q("thread_history_1.sqlite",
+  "SELECT thread_id, turn_id, status, COALESCE(error_json,''), COALESCE(started_at,''), COALESCE(completed_at,'') FROM thread_turns")
+if rows is not None:
+    for r in rows:
+        out["turns"].append({"thread_id": r[0], "turn_id": r[1], "status": r[2], "error_json": r[3], "started_at": r[4], "completed_at": r[5]})
 print(json.dumps(out))
 `;
 
@@ -50,6 +60,8 @@ class DbWatch {
     this.lastLogId = null;   // null = not initialized (first poll sets baseline)
     this.goalStatus = new Map(); // "threadId/goalId" -> status
     this.threadSeen = new Map(); // threadId -> updated_ms
+    this.threadSource = new Map(); // threadId -> threads.source (exec/app/...)
+    this.turnStatus = new Map(); // turnId -> {threadId,status,startedAt}
     this.disabledReason = null;
   }
 
@@ -109,10 +121,26 @@ class DbWatch {
     }
 
     for (const t of d.threads) {
+      this.threadSource.set(t.id, t.source);
       const prev = this.threadSeen.get(t.id) || 0;
       if (t.updated_ms > prev) {
         this.threadSeen.set(t.id, t.updated_ms);
         if (prev > 0) events.push({ kind: 'thread', threadId: t.id, updatedMs: t.updated_ms });
+      }
+    }
+
+    // Per-turn status: 'failed' turns carry error_json (rule-matched like logs);
+    // 'inProgress' turns whose thread went idle are orphan corpses (died mid-run)
+    // and are surfaced through orphanTurns() for stall handling.
+    const firstPollTurns = this.turnStatus.size === 0;
+    for (const tn of d.turns) {
+      const prev = this.turnStatus.get(tn.turn_id);
+      const startedMs = Date.parse(tn.started_at) || 0;
+      this.turnStatus.set(tn.turn_id, { threadId: tn.thread_id, status: tn.status, startedMs, errorJson: tn.error_json });
+      if (tn.status === 'failed') {
+        if (firstPollTurns ? startedMs > cutoff : (!prev || prev.status !== 'failed')) {
+          events.push({ kind: 'log', threadId: tn.thread_id, text: tn.error_json || 'turn failed', level: 'ERROR', replay: firstPollTurns });
+        }
       }
     }
     return { events, disabled: null };
@@ -133,6 +161,30 @@ class DbWatch {
       out.push({ threadId: tid, idleMs: now - updatedMs });
     }
     return out;
+  }
+
+  // Orphaned turns: status=inProgress but the owning thread has been idle for
+  // idleMs — the process died mid-turn (crash, kill, power loss). Distinct
+  // from staleThreads: the turn row itself proves work was abandoned.
+  orphanTurns(idleMs) {
+    const now = Date.now();
+    const out = [];
+    for (const [turnId, t] of this.turnStatus) {
+      if (t.status !== 'inProgress') continue;
+      const threadIdle = now - (this.threadSeen.get(t.threadId) || 0);
+      const turnAge = t.startedMs ? now - t.startedMs : Infinity;
+      if (Math.min(threadIdle, turnAge) >= idleMs) {
+        out.push({ threadId: t.threadId, turnId, idleMs: Math.min(threadIdle, turnAge) });
+      }
+    }
+    return out;
+  }
+
+  // Recovery routing hint: exec-source threads can be revived out-of-app via
+  // `codex exec resume`; app/desktop/interactive threads need `codex queue`
+  // (which only fires while that surface has the thread open).
+  sourceOf(threadId) {
+    return this.threadSource.get(threadId) || '';
   }
 }
 
