@@ -1,0 +1,16 @@
+{
+  "name": "agentwatch",
+  "version": "0.1.0",
+  "description": "Watchdog for long-running AI coding agents (Codex CLI/Desktop/exec): detects stream disconnects, usage limits, stalls and crashes, then resumes the exact same thread and notifies you.",
+  "type": "commonjs",
+  "bin": {
+    "agentwatch": "src/cli.js"
+  },
+  "scripts": {
+    "test": "node test/run.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

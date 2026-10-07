@@ -1,0 +1,148 @@
+'use strict';
+// E2E test: synthetic rollout files + fake `codex` shim -> assert the full
+// detect -> schedule -> resume -> verify -> notify chain, plus fail-closed
+// and give-up paths. No real Codex needed.
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { execFileSync } = require('child_process');
+const { Rules } = require('../src/rules');
+const { SessionMonitor } = require('../src/monitor');
+const { Recover } = require('../src/recover');
+const { Notifier } = require('../src/notify');
+const { State } = require('../src/state');
+
+const TID1 = '11111111-2222-4333-8444-555555555555';
+const TID2 = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+function mkTmp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'aw-')); }
+
+function rollout(codexHome, tid) {
+  const dir = path.join(codexHome, 'sessions', '2026', '10', '07');
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `rollout-2026-10-07T03-00-00-${tid}.jsonl`);
+}
+
+function append(file, obj) {
+  fs.appendFileSync(file, JSON.stringify(obj) + '\n');
+}
+
+const testRules = {
+  pollIntervalMs: 50, stallAfterMs: 120, verifyAfterMs: 120, retryDelayMs: 40, maxAttempts: 2,
+  resumeMessage: 'Continue', goalResumeMessage: '/goal resume',
+  stall: { enabled: true, action: 'queue', message: 'Continue' },
+  rules: [
+    { name: 'usage_limit', contains: ['usage limit'], extractReset: 'try again at ([^\"]+)', action: 'wait_reset', fallbackDelayMs: 80 },
+    { name: 'stream_disconnected', contains: ['stream disconnected before completion'], action: 'queue', delayMs: 50 },
+    { name: 'never_retry', contains: ['authentication failed'], action: 'ignore' },
+  ],
+};
+
+async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+let passed = 0, failed = 0;
+function ok(cond, name) { if (cond) { passed++; console.log('  ok', name); } else { failed++; console.log('  FAIL', name); } }
+
+async function main() {
+  const tmp = mkTmp();
+  const codexHome = path.join(tmp, '.codex');
+  const stateDir = path.join(tmp, '.agentwatch');
+  const rulesFile = path.join(tmp, 'rules.json');
+  fs.writeFileSync(rulesFile, JSON.stringify(testRules));
+  fs.mkdirSync(path.join(codexHome, 'sessions'), { recursive: true });
+
+  // fake codex shim: logs every invocation
+  const callsLog = path.join(tmp, 'calls.log');
+  const binDir = path.join(tmp, 'bin'); fs.mkdirSync(binDir);
+  const shimPath = path.join(binDir, 'codex.cmd');
+  fs.writeFileSync(shimPath, `@echo off\r\necho %*>> "${callsLog.replace(/\\/g, '\\\\')}"\r\n`);
+
+  const rules = new Rules(rulesFile);
+  const monitor = new SessionMonitor(codexHome);
+  const state = new State(stateDir);
+  const notifier = new Notifier({ quiet: true });
+  const recover = new Recover({ rules, state, notifier, codexBin: shimPath, dryRun: false, log: () => {} });
+
+  console.log('== stream disconnect -> queue -> recovered ==');
+  const f1 = rollout(codexHome, TID1);
+  append(f1, { timestamp: '2026-10-07T03:00:00Z', type: 'session_meta', payload: { id: TID1 } });
+  monitor.poll(); // establish baseline offset
+  append(f1, { timestamp: '2026-10-07T03:10:00Z', type: 'event_msg', payload: { type: 'error', message: 'stream disconnected before completion: stream closed before response.completed' } });
+  for (const ev of monitor.poll()) {
+    recover.onActivity(ev.threadId);
+    const rule = rules.match(SessionMonitor.haystack(ev));
+    if (rule) recover.onFailure(ev.threadId, rule, SessionMonitor.haystack(ev));
+  }
+  ok(state.t(TID1).status === 'scheduled', 'stream disconnect scheduled');
+  ok(state.t(TID1).lastRule === 'stream_disconnected', 'rule name recorded');
+  await sleep(120); await recover.tick(monitor);
+  await sleep(120); // let shim exit
+  const calls = fs.existsSync(callsLog) ? fs.readFileSync(callsLog, 'utf8') : '';
+  ok(calls.includes(`--thread ${TID1}`), 'codex queue called with exact thread UUID');
+  ok(calls.includes('--message Continue'), 'resume message sent');
+  ok(state.t(TID1).status === 'verifying', 'verifying after fire');
+  // simulate the thread coming back to life
+  append(f1, { timestamp: '2026-10-07T03:11:00Z', type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { total_tokens: 1234 } } } });
+  for (const ev of monitor.poll()) recover.onActivity(ev.threadId);
+  ok(state.t(TID1).status === 'ok', 'recovered to ok on activity');
+  ok(notifier.log.some(n => n.text.includes('recovered')), 'recovery notification emitted');
+
+  console.log('== usage limit -> wait_reset -> fires when due ==');
+  const f2 = rollout(codexHome, TID2);
+  append(f2, { timestamp: '2026-10-07T04:00:00Z', type: 'session_meta', payload: { id: TID2 } });
+  monitor.poll();
+  const past = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  append(f2, { timestamp: '2026-10-07T04:10:00Z', type: 'event_msg', payload: { type: 'error', message: `You've hit your usage limit. try again at ${past}` } });
+  for (const ev of monitor.poll()) {
+    const rule = rules.match(SessionMonitor.haystack(ev));
+    if (rule) recover.onFailure(ev.threadId, rule, SessionMonitor.haystack(ev));
+  }
+  const st2 = state.t(TID2);
+  ok(st2.status === 'scheduled' && st2.lastRule === 'usage_limit', 'usage limit scheduled');
+  ok(st2.scheduledAt <= Date.now(), 'reset time extracted (past+grace -> due now)');
+  await sleep(50); await recover.tick(monitor); await sleep(100);
+  const calls2 = fs.readFileSync(callsLog, 'utf8');
+  ok(calls2.includes(`--thread ${TID2}`), 'usage-limit resume fired for thread 2');
+
+  console.log('== fail-closed: auth error -> nothing ==');
+  const f1b = f1;
+  append(f1b, { timestamp: '2026-10-07T05:00:00Z', type: 'event_msg', payload: { type: 'error', message: 'authentication failed: invalid api key' } });
+  const before = fs.readFileSync(callsLog, 'utf8').length;
+  for (const ev of monitor.poll()) {
+    recover.onActivity(ev.threadId);
+    const rule = rules.match(SessionMonitor.haystack(ev));
+    if (rule) recover.onFailure(ev.threadId, rule, SessionMonitor.haystack(ev));
+  }
+  await sleep(80); await recover.tick(monitor); await sleep(80);
+  ok(fs.readFileSync(callsLog, 'utf8').length === before, 'no queue call for never-retry error');
+  ok(state.t(TID1).status === 'ok', 'thread1 stays ok (auth error ignored)');
+
+  console.log('== stall detection -> queue -> give up path ==');
+  const TID3 = 'cccccccc-dddd-4eee-8fff-000000000000';
+  const f3 = rollout(codexHome, TID3);
+  append(f3, { timestamp: '2026-10-07T05:30:00Z', type: 'session_meta', payload: { id: TID3 } });
+  append(f3, { timestamp: '2026-10-07T05:30:10Z', type: 'response_item', payload: { type: 'function_call', name: 'exec', arguments: '{}' } });
+  monitor.poll();
+  await sleep(140); // exceeds stallAfterMs=120, no terminal/error in last line
+  for (const s of monitor.stalledThreads(rules.stallAfterMs)) {
+    if (s.threadId === TID3) recover.onStall(s.threadId, rules.cfg.stall, s.idleMs);
+  }
+  ok(state.t(TID3).status === 'scheduled', 'stall detected & scheduled');
+  // fire, verify-fail, retry, verify-fail -> attempts=2=max -> dead
+  for (let i = 0; i < 5; i++) {
+    await sleep(140); await recover.tick(monitor);
+  }
+  await sleep(100);
+  ok(state.t(TID3).status === 'dead', 'gave up after maxAttempts');
+  ok(notifier.log.some(n => n.text.includes('GAVE UP') && n.text.includes(TID3.slice(0, 8))), 'escalation notification emitted for TID3');
+
+  console.log('== cli smoke ==');
+  const out = execFileSync(process.execPath, [path.join(__dirname, '..', 'src', 'cli.js'), 'scan',
+    '--codex-home', codexHome, '--state-dir', stateDir, '--rules', rulesFile, '--codex-bin', shimPath],
+    { encoding: 'utf8', timeout: 20000 });
+  ok(/thread\(s\) seen/.test(out), 'cli scan prints threads');
+
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+}
+
+main().catch(e => { console.error(e); process.exit(1); });

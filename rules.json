@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "comment": "Detection rules, hot-reloaded. Each rule: match ANY of 'contains' (case-insensitive substrings) or 'patterns' (regex) against a rollout line's message text. First matching rule wins. 'action': queue (inject message via codex queue), wait_reset (schedule resume at resets_at), notify (alert only), ignore (fail-closed, do nothing).",
+  "pollIntervalMs": 15000,
+  "stallAfterMs": 420000,
+  "verifyAfterMs": 300000,
+  "retryDelayMs": 60000,
+  "maxAttempts": 3,
+  "resumeMessage": "Continue",
+  "goalResumeMessage": "/goal resume",
+  "rules": [
+    {
+      "name": "usage_limit",
+      "contains": ["usage limit", "hit your usage limit", "usage-limited", "usagelimited"],
+      "patterns": ["resets?\\s+at\\s+\\d{1,2}:\\d{2}", "try again at \\d{1,2}:\\d{2}"],
+      "extractReset": "resets?_?(?:at|_at)?[\"':\\s]+([0-9T:Z+\\-\\.apmAPM ]+|\\d{13}|\\d{4}-\\d{2}-\\d{2}[T ][0-9:.+-Z]+)",
+      "action": "wait_reset",
+      "fallbackDelayMs": 3600000
+    },
+    {
+      "name": "stream_disconnected",
+      "contains": [
+        "stream disconnected before completion",
+        "stream closed before response.completed",
+        "internal streaming error",
+        "error sending request for url",
+        "transport error",
+        "error decoding response body"
+      ],
+      "action": "queue",
+      "delayMs": 5000
+    },
+    {
+      "name": "server_overload",
+      "contains": [
+        "servers are currently overloaded",
+        "at capacity",
+        "selected model is at capacity",
+        "overloaded_error"
+      ],
+      "action": "queue",
+      "delayMs": 60000,
+      "retryBackoff": 2
+    },
+    {
+      "name": "rate_limit_429",
+      "contains": ["429 too many requests", "rate limit", "rate_limit_exceeded", "exceeded retry limit"],
+      "action": "queue",
+      "delayMs": 60000
+    },
+    {
+      "name": "goal_usage_limited",
+      "contains": ["\"status\": \"usageLimited\"", "\"status\":\"usageLimited\"", "usageLimited"],
+      "action": "queue",
+      "message": "/goal resume",
+      "delayMs": 10000
+    },
+    {
+      "name": "server_error_5xx",
+      "patterns": ["5\\d{2}\\s+(server|internal)", "status:\\s*5\\d{2}", "internal server error", "bad gateway", "service unavailable"],
+      "action": "queue",
+      "delayMs": 30000
+    },
+    {
+      "name": "timeout",
+      "contains": ["transport error: timeout", "request timed out", "etimedout", "econnreset", "econnrefused"],
+      "action": "queue",
+      "delayMs": 30000
+    },
+    {
+      "name": "never_retry",
+      "contains": [
+        "cancelled by user",
+        "permission denied",
+        "content policy",
+        "flagged for possible",
+        "context length",
+        "invalid api key",
+        "authentication failed",
+        "unauthorized"
+      ],
+      "action": "ignore"
+    }
+  ],
+  "stall": {
+    "enabled": true,
+    "action": "queue",
+    "message": "Continue",
+    "comment": "A thread whose rollout shows an in-progress turn but no new events for stallAfterMs is treated as stalled. Conservative: only fires when the last event indicates an active turn."
+  }
+}
