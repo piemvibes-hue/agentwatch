@@ -2,6 +2,7 @@
 'use strict';
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 const { Rules } = require('./rules');
 const { SessionMonitor } = require('./monitor');
 const { DbWatch } = require('./dbwatch');
@@ -9,6 +10,7 @@ const { Recover } = require('./recover');
 const { Notifier } = require('./notify');
 const { State } = require('./state');
 const { serve } = require('./dashboard');
+const { install, uninstall } = require('./install');
 const { spawn } = require('child_process');
 
 function parseArgs(argv) {
@@ -30,6 +32,9 @@ function usage() {
   agentwatch watch      Monitor ~/.codex/sessions and auto-resume dead threads
   agentwatch run CMD..  Run a command (e.g. 'agentwatch run codex exec ...')
                         under the watchdog; exits when the command exits
+  agentwatch install    One command: auto-start on login + launch now
+                        (watch --serve at http://127.0.0.1:8787)
+  agentwatch uninstall  Remove the auto-start and stop the watchdog
   agentwatch scan       One-shot scan, print thread/failure states, exit
   agentwatch status     Print persisted watchdog state
 
@@ -120,6 +125,22 @@ async function main() {
 
   if (cmd === 'status') {
     console.log(JSON.stringify(state.data, null, 2));
+    return;
+  }
+
+  if (cmd === 'install' || cmd === 'uninstall') {
+    fs.mkdirSync(stateDir, { recursive: true });
+    const cliJs = path.join(__dirname, 'cli.js');
+    const fn = cmd === 'install' ? install : uninstall;
+    const r = fn({ nodeBin: process.execPath, cliJs, stateDir, log });
+    if (r.ok) {
+      log(cmd === 'install'
+        ? `installed via ${r.how} — dashboard http://127.0.0.1:${Number(a.port) || 8787}`
+        : 'uninstalled');
+    } else {
+      console.error(`[install-error] ${r.error}`);
+      process.exit(1);
+    }
     return;
   }
 

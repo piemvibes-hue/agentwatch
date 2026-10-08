@@ -47,12 +47,28 @@ Two detection layers (structured first, text as fallback):
 - **Pre-existing corpses are detected too.** On startup agentwatch inspects the tail of every rollout file — a thread that died at 3 AM is found when you launch the watchdog at 8 AM.
 - **State persists** in `~/.agentwatch/state.json` — restart-safe schedules.
 
+## One-command install
+
+```powershell
+# Windows (PowerShell):
+iwr https://raw.githubusercontent.com/piemvibes-hue/agentwatch/main/install.ps1 | iex
+```
+```sh
+# macOS / Linux:
+curl -fsSL https://raw.githubusercontent.com/piemvibes-hue/agentwatch/main/install.sh | sh
+```
+
+That clones to `~/.agentwatch/app`, registers auto-start on login (schtasks / launchd / systemd), and launches the watchdog **now** — dashboard at http://127.0.0.1:8787. `node ~/.agentwatch/app/src/cli.js uninstall` removes it all. Requirements: Node 18+, `codex` on PATH, git.
+
+Already cloned? `node src/cli.js install` does the same registration without re-downloading.
+
 ## Usage
 
 ```bash
 # requires Node 18+, and `codex` on PATH (ships with Codex CLI / Desktop)
 
-node src/cli.js watch                      # run the watchdog
+node src/cli.js install                    # auto-start on login + start now (one command)
+node src/cli.js watch                      # run the watchdog in the foreground
 node src/cli.js watch --serve              # + local dashboard http://127.0.0.1:8787
 node src/cli.js watch --ntfy my-topic      # + push notifications via ntfy.sh
 node src/cli.js watch --webhook https://…  # + POST {text,title,detail} JSON
@@ -65,7 +81,7 @@ node src/cli.js status                     # persisted watchdog state
 
 **Dashboard**: `--serve` gives you a live page (thread states, recovery attempts, event feed) at http://127.0.0.1:8787 — localhost only, zero deps, no auth needed on loopback.
 
-**Codex plugin**: this repo doubles as a [Codex plugin](https://developers.openai.com/codex/plugins) — `.codex-plugin/plugin.json` + `skills/agentwatch/` teach any Codex agent how to supervise its own long tasks. Add the repo to your Codex plugins and it can call `agentwatch run`/`scan`/`status` itself.
+**Codex plugin**: this repo doubles as a [Codex plugin](https://developers.openai.com/codex/plugins) — `.codex-plugin/plugin.json` + `skills/agentwatch/` teach any Codex agent how to supervise its own long tasks. Add the repo to your Codex plugins, tell your agent "install agentwatch", and it runs the one-liner itself.
 
 First real-world run on your machine:
 
@@ -90,11 +106,7 @@ wire_api = "responses"           # codex ≥0.160 dropped the chat wire api
 
 `codex exec resume` inherits the env from the agentwatch process — keep the key exported in whatever session runs the watchdog.
 
-**Autostart on Windows** (survives logout/reboot for overnight runs):
-
-```powershell
-schtasks /create /tn agentwatch /tr "node C:\path\to\agentwatch\src\cli.js watch" /sc onlogon /rl limited
-```
+**Autostart**: `node src/cli.js install` handles it on every OS — schtasks (Windows), launchd (macOS), systemd user unit (Linux), cron @reboot fallback. It also launches the watchdog immediately; `uninstall` reverts both.
 
 ## Detection coverage (rules.json)
 

@@ -10,12 +10,16 @@ threads that die from stream disconnects, usage limits, stalls, or crashes.
 
 ## Setup (once)
 
-Requires Node 18+. Python 3 optional (enables the sqlite detection layer —
-without it, rollout-file detection still works).
+Requires Node 18+ and git. One command installs AND launches it (auto-start on
+login: schtasks / launchd / systemd; dashboard at http://127.0.0.1:8787):
 
 ```bash
-git clone https://github.com/piemvibes-hue/agentwatch.git
+curl -fsSL https://raw.githubusercontent.com/piemvibes-hue/agentwatch/main/install.sh | sh   # macOS/Linux
+# Windows PowerShell: iwr https://raw.githubusercontent.com/piemvibes-hue/agentwatch/main/install.ps1 | iex
 ```
+
+Python 3 optional (enables the sqlite detection layer — without it,
+rollout-file detection still works). Uninstall: `node ~/.agentwatch/app/src/cli.js uninstall`.
 
 ## Supervising this session / a task
 
