@@ -86,6 +86,15 @@ class Recover {
         if (st.attempts < this.rules.maxAttempts) {
           this.log(`[verify-fail] ${threadId.slice(0, 8)} no activity; retrying`);
           st.status = 'ok';
+          // A queued message that produced no activity almost certainly was
+          // never consumed — no Codex surface holds that thread (verified on
+          // macOS: items wait in queue_1.sqlite indefinitely once the client
+          // dies or releases the thread). `codex exec resume` revives those
+          // threads directly, so fall back to it on the retry.
+          if (st.lastMethod === 'queue' && (this.rules.cfg.recoveryMethod || 'auto') === 'auto') {
+            st.methodOverride = 'exec-resume';
+            this.log(`[fallback] ${threadId.slice(0, 8)} queue undelivered; retrying via exec-resume`);
+          }
           const rule = { name: st.lastRule || 'retry', action: 'queue', message: st.message };
           this._schedule(threadId, rule, now + this.rules.retryDelayMs * st.attempts);
         } else {
@@ -106,7 +115,8 @@ class Recover {
   // turn in a fresh process, which is the only way to revive threads no app
   // has open (headless exec runs, orphaned corpses). cfg.recoveryMethod:
   // 'auto' (default) picks exec-resume for source=exec threads, else queue.
-  _method(threadId) {
+  _method(threadId, st) {
+    if (st && st.methodOverride) return st.methodOverride;
     const m = (this.rules.cfg.recoveryMethod || 'auto').toLowerCase();
     if (m === 'queue' || m === 'exec-resume') return m;
     return this.sourceOf && this.sourceOf(threadId) === 'exec' ? 'exec-resume' : 'queue';
@@ -120,9 +130,10 @@ class Recover {
 
   async _fire(threadId, st) {
     const msg = st.message || this.rules.resumeMessage;
-    const method = this._method(threadId);
+    const method = this._method(threadId, st);
     const argv = this._argv(threadId, msg, method);
     this.log(`[resume] ${threadId.slice(0, 8)} -> codex ${argv.join(' ')}`);
+    st.lastMethod = method;
     st.status = 'verifying';
     st.verifyUntil = Date.now() + this.rules.verifyAfterMs;
     st.updatedAt = Date.now();

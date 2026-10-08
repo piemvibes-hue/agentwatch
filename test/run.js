@@ -79,8 +79,15 @@ async function main() {
   // fake codex shim: logs every invocation
   const callsLog = path.join(tmp, 'calls.log');
   const binDir = path.join(tmp, 'bin'); fs.mkdirSync(binDir);
-  const shimPath = path.join(binDir, 'codex.cmd');
-  fs.writeFileSync(shimPath, `@echo off\r\necho %*>> "${callsLog.replace(/\\/g, '\\\\')}"\r\n`);
+  let shimPath;
+  if (process.platform === 'win32') {
+    shimPath = path.join(binDir, 'codex.cmd');
+    fs.writeFileSync(shimPath, `@echo off\r\necho %*>> "${callsLog.replace(/\\/g, '\\\\')}"\r\n`);
+  } else {
+    shimPath = path.join(binDir, 'codex');
+    fs.writeFileSync(shimPath, `#!/bin/sh\necho "$@" >> "${callsLog}"\n`);
+    fs.chmodSync(shimPath, 0o755);
+  }
 
   const rules = new Rules(rulesFile);
   const monitor = new SessionMonitor(codexHome);
@@ -174,10 +181,11 @@ async function main() {
   const { DbWatch } = require('../src/dbwatch');
   const TID4 = 'eeeeeeee-1111-4222-8333-444444444444';
   const TID5 = '55555555-6666-4777-8888-999999999999';
-  if (new DbWatch(codexHome).pyBin) {
+  const pyBin = new DbWatch(codexHome).pyBin;
+  if (pyBin) {
     const TID6 = '66666666-7777-4888-8999-000000000000'; // failed turn (model_not_found)
     const TID7 = '77777777-8888-4999-8000-111111111111'; // orphan inProgress turn, exec source
-    execFileSync('python', ['-c', PY_MKDB, codexHome, TID4, 'stream disconnected before completion: boom', TID5, TID4, TID6, TID7, 'model_not_found: no channel'], { timeout: 15000 });
+    execFileSync(pyBin, ['-c', PY_MKDB, codexHome, TID4, 'stream disconnected before completion: boom', TID5, TID4, TID6, TID7, 'model_not_found: no channel'], { timeout: 15000 });
     const dbwatch = new DbWatch(codexHome);
     const recover2 = new Recover({ rules, state, notifier, codexBin: shimPath, dryRun: false, log: () => {}, sourceOf: tid => dbwatch.sourceOf(tid) });
     let dbev = dbwatch.poll();
@@ -202,12 +210,30 @@ async function main() {
     ok(calls3.includes('/goal resume'), 'goal resume message sent');
     ok(calls3.includes(`exec resume ${TID7}`), 'exec-source orphan routed to codex exec resume');
     // thread activity via DB -> recovered
-    execFileSync('python', ['-c',
+    execFileSync(pyBin, ['-c',
       `import sqlite3,sys,time;con=sqlite3.connect(sys.argv[1]+'/state_5.sqlite');con.execute("UPDATE threads SET updated_at_ms=?",(int(time.time()*1000),));con.commit()`,
       codexHome], { timeout: 15000 });
     dbev = dbwatch.poll();
     for (const ev of dbev.events) if (ev.kind === 'thread') recover2.onActivity(ev.threadId);
     ok(state.t(TID4).status === 'ok', 'db activity marks recovery');
+
+    console.log('== queue undelivered -> exec-resume fallback ==');
+    const TID8 = '88888888-9999-4aaa-8bbb-cccccccccccc'; // app/desktop-thread shape: no exec source
+    const f8 = rollout(codexHome, TID8);
+    append(f8, { timestamp: '2026-10-07T06:00:00Z', type: 'session_meta', payload: { id: TID8 } });
+    monitor.poll();
+    append(f8, { timestamp: '2026-10-07T06:01:00Z', type: 'event_msg', payload: { type: 'error', message: 'stream disconnected before completion: stream closed' } });
+    for (const ev of monitor.poll()) {
+      const rule = rules.match(SessionMonitor.haystack(ev));
+      if (rule) recover2.onFailure(ev.threadId, rule, SessionMonitor.haystack(ev));
+    }
+    ok(state.t(TID8).status === 'scheduled', 'fallback-test failure scheduled');
+    await sleep(80); await recover2.tick(monitor); await sleep(60);
+    ok(state.t(TID8).lastMethod === 'queue', 'first attempt used queue');
+    await sleep(150); await recover2.tick(monitor);       // verify window expires -> retry scheduled
+    await sleep(140); await recover2.tick(monitor); await sleep(400); // retry fires
+    const calls4 = fs.readFileSync(callsLog, 'utf8');
+    ok(calls4.includes(`exec resume ${TID8}`), 'undelivered queue retried via codex exec resume');
   } else {
     console.log('  (skipped: no python)');
   }

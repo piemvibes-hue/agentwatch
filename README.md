@@ -27,7 +27,7 @@ Two detection layers (structured first, text as fallback):
         │  nothing → retry (max 3) → still nothing → "GAVE UP" notification
 ```
 
-- **No GUI automation, no PTY wrapping, no guessing `--last`.** Recovery auto-routes per thread `source`: interactive/Desktop threads get `codex queue --thread <uuid>` (the official in-app injection); headless `exec` threads get `codex exec resume <uuid>` which re-executes a turn in a fresh process. Override with `recoveryMethod: "queue"|"exec-resume"` in rules.json.
+- **No GUI automation, no PTY wrapping, no guessing `--last`.** Recovery auto-routes per thread `source`: interactive/Desktop threads get `codex queue --thread <uuid>` (the official in-app injection); headless `exec` threads get `codex exec resume <uuid>` which re-executes a turn in a fresh process. Override with `recoveryMethod: "queue"|"exec-resume"` in rules.json. If a `queue` attempt produces no activity within the verify window — the message was never consumed, i.e. no surface holds the thread — `auto` mode falls back to `exec resume` for the retry instead of burning all attempts on an unread mailbox.
 - **Fail-closed.** Only named failures are retried (stream disconnect, 429, overload, 5xx, timeout, usage limit, stall). Permanent config errors (`model_not_found`, bad API key, frozen account) alert you instead of burning retries; user cancellations and content-policy stops are never touched.
 
 *Verified on real codex-cli 0.161.0 + Windows Server 2022: a killed exec turn was detected as an orphaned `inProgress` row, revived via `codex exec resume` to a real `completed` turn, and marked recovered on next poll. `codex queue` was confirmed to land in `queue_1.sqlite` (delivered only while a surface holds the thread open).*

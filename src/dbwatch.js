@@ -53,6 +53,26 @@ if rows is not None:
 print(json.dumps(out))
 `;
 
+// Codex's sqlite stores mix three timestamp shapes: epoch seconds
+// (thread_turns.started_at, logs.ts), epoch ms (threads.updated_at_ms), and
+// naive UTC 'YYYY-MM-DD HH:MM:SS' strings (sqlx datetime('now') columns).
+// Date.parse misreads all of them: integers become NaN, and naive UTC strings
+// are read as local time — which on UTC-x timezones pushes turn starts into
+// the future and silently disables orphan detection.
+function parseMs(v) {
+  if (v === null || v === undefined || v === '') return 0;
+  const s = String(v).trim();
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const n = Number(s);
+    return n > 0 && n < 1e12 ? n * 1000 : n; // epoch seconds vs epoch ms
+  }
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)/.exec(s);
+  if (m && !/([zZ]|[+-]\d{2}:?\d{2})\s*$/.test(s)) {
+    return Date.parse(`${m[1]}T${m[2]}Z`) || 0; // naive sqlite datetime is UTC
+  }
+  return Date.parse(s) || 0;
+}
+
 class DbWatch {
   constructor(codexHome) {
     this.codexHome = codexHome;
@@ -102,7 +122,7 @@ class DbWatch {
     if (this.lastLogId === null) {
       // First poll: replay only recent errors (died-before-watchdog-started case).
       for (const l of d.logs) {
-        const ts = Date.parse(l.ts) || 0;
+        const ts = parseMs(l.ts);
         if (ts > cutoff) events.push({ kind: 'log', threadId: l.thread_id, text: l.body, level: l.level, replay: true });
       }
     } else {
@@ -135,7 +155,7 @@ class DbWatch {
     const firstPollTurns = this.turnStatus.size === 0;
     for (const tn of d.turns) {
       const prev = this.turnStatus.get(tn.turn_id);
-      const startedMs = Date.parse(tn.started_at) || 0;
+      const startedMs = parseMs(tn.started_at);
       this.turnStatus.set(tn.turn_id, { threadId: tn.thread_id, status: tn.status, startedMs, errorJson: tn.error_json });
       if (tn.status === 'failed') {
         if (firstPollTurns ? startedMs > cutoff : (!prev || prev.status !== 'failed')) {
