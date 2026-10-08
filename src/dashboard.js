@@ -28,7 +28,8 @@ a{color:#58a6ff;text-decoration:none}
 <table><thead><tr><th id="h1">thread</th><th id="h2">title</th><th id="h3">source</th><th id="h4">state</th><th id="h5">last activity</th><th id="h6">recovery</th></tr></thead><tbody id="rows"></tbody></table>
 <h2 id="evh">events</h2><div id="events"></div>
 <script>
-const L=(navigator.language||'en').toLowerCase().startsWith('zh')?{
+const qlang=new URLSearchParams(location.search).get('lang');
+const L=((qlang||navigator.language||'en').toLowerCase().startsWith('zh'))?{
  thread:'线程',title:'标题',source:'来源',state:'状态',lasta:'最近活动',recovery:'恢复',
  watching:'监视中',thr:'个线程',updated:'更新于',events:'事件',empty:'还没有看到线程',
  resume:'续跑于',try:'第',verifying:'验证中… 第',gaveup:'已放弃（',tries:'次）',last:'上次：',
