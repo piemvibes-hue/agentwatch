@@ -1,8 +1,21 @@
-# agentwatch
+<p align="center">
+  <img src="docs/logo.png" width="96" alt="agentwatch logo"><br>
+  <b>agentwatch</b><br>
+  Watchdog for long-running AI coding agents
+</p>
+
+<p align="center">
+  <a href="https://github.com/piemvibes-hue/agentwatch/actions/workflows/ci.yml"><img src="https://github.com/piemvibes-hue/agentwatch/actions/workflows/ci.yml/badge.svg" alt="tests"></a>
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
+  <img src="https://img.shields.io/badge/node-%E2%89%A518-brightgreen" alt="node>=18">
+  <img src="https://img.shields.io/badge/deps-0-blue" alt="zero dependencies">
+</p>
 
 **断了续，死了报。** Watchdog for long-running AI coding agents — starts with OpenAI Codex (CLI, Desktop, exec — they all share `~/.codex`).
 
 Leave a Codex task running overnight. When the stream disconnects, the usage limit hits, the servers 429, or the thread quietly stalls, agentwatch detects it, resumes **that exact thread** through the official `codex queue` command, verifies it is actually producing work again, and pushes you a notification when it can't.
+
+<p align="center"><img src="docs/demo.gif" alt="agentwatch rescues two dead codex threads" width="720"></p>
 
 ## How it works
 
