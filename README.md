@@ -64,12 +64,20 @@ That clones to `~/.agentwatch/app`, registers auto-start on login (schtasks / la
 
 Already cloned? `node src/cli.js install` does the same registration without re-downloading.
 
+**Push notifications to your phone (2 min, recommended):**
+
+1. Install the free **ntfy** app (App Store / Google Play), tap **+**, subscribe to a random topic name like `aw-my-pc-42`.
+2. `node src/cli.js install --ntfy aw-my-pc-42` — the topic is baked into the autostart command, so rescues/give-ups hit your phone even after reboots.
+
+Prefer a server-side hook? `--webhook https://…` POSTs `{text,title,detail}` JSON to your endpoint instead.
+
 ## Usage
 
 ```bash
 # requires Node 18+, and `codex` on PATH (ships with Codex CLI / Desktop)
 
 node src/cli.js install                    # auto-start on login + start now (one command)
+node src/cli.js install --ntfy my-topic    # same, with push notifications baked in
 node src/cli.js watch                      # run the watchdog in the foreground
 node src/cli.js watch --serve              # + local dashboard http://127.0.0.1:8787
 node src/cli.js watch --ntfy my-topic      # + push notifications via ntfy.sh
@@ -81,7 +89,7 @@ node src/cli.js scan                       # one-shot status table
 node src/cli.js status                     # persisted watchdog state
 ```
 
-**Dashboard**: `--serve` gives you a live page (thread states, recovery attempts, event feed) at http://127.0.0.1:8787 — localhost only, zero deps, no auth needed on loopback.
+**Dashboard**: `--serve` gives you a live control page (thread states, recovery attempts, event feed) at http://127.0.0.1:8787 — localhost only, zero deps, no auth needed on loopback. Per-thread **Retry / Ignore** buttons act on the live watchdog. UI language follows the browser, or force with `?lang=zh` / `?lang=en`.
 
 **Codex plugin**: this repo doubles as a [Codex plugin](https://developers.openai.com/codex/plugins) — `.codex-plugin/plugin.json` + `skills/agentwatch/` teach any Codex agent how to supervise its own long tasks. Add the repo to your Codex plugins, tell your agent "install agentwatch", and it runs the one-liner itself.
 

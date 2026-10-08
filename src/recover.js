@@ -23,7 +23,7 @@ class Recover {
       this.log(`[skip] ${threadId.slice(0, 8)} already ${st.status}`);
       return;
     }
-    if (st.status === 'dead') return; // gave up; human notified
+    if (st.status === 'dead' || st.status === 'ignored') return; // gave up or muted; human notified
 
     switch (rule.action) {
       case 'ignore':
@@ -159,6 +159,23 @@ class Recover {
         this.state.save();
       }
     });
+  }
+
+  // Manual actions (dashboard/API): retry now = reset counters and schedule
+  // an immediate resume; ignore = mute the thread until un-ignored.
+  retryNow(threadId) {
+    const st = this.state.t(threadId);
+    st.status = 'ok'; st.attempts = 0; st.methodOverride = null; st.scheduledAt = null;
+    this.onFailure(threadId, { name: 'manual-retry', action: 'queue', message: this.rules.resumeMessage }, 'manual retry requested');
+  }
+
+  setIgnored(threadId, ignored) {
+    const st = this.state.t(threadId);
+    st.status = ignored ? 'ignored' : 'ok';
+    st.attempts = 0;
+    st.updatedAt = Date.now();
+    this.state.save();
+    this.log(`[${ignored ? 'ignored' : 'unignored'}] ${threadId.slice(0, 8)}`);
   }
 
   // New rollout activity for a thread currently being verified → recovered.

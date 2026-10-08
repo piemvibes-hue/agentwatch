@@ -64,12 +64,20 @@ curl -fsSL https://raw.githubusercontent.com/piemvibes-hue/agentwatch/main/insta
 
 已 clone 的话，`node src/cli.js install` 同样完成注册。
 
+**手机推送（2 分钟，推荐）：**
+
+1. 装免费的 **ntfy** app（App Store / 各大安卓商店），点 **+** 订阅一个随机主题名，比如 `aw-my-pc-42`。
+2. `node src/cli.js install --ntfy aw-my-pc-42`——主题名会写进自启命令，之后救场成功/抢救无效都会推到你手机，重启也有效。
+
+想要服务端回调？`--webhook https://…` 会把 `{text,title,detail}` JSON POST 到你的接口。
+
 ## 用法
 
 ```bash
 # 需要 Node 18+，PATH 里有 codex（随 Codex CLI / 桌面端自带）
 
 node src/cli.js install                    # 一键：注册自启 + 立刻启动
+node src/cli.js install --ntfy my-topic    # 同上，并把手机推送一起配好
 node src/cli.js watch                      # 前台跑守护
 node src/cli.js watch --serve              # + 本地看板 http://127.0.0.1:8787
 node src/cli.js watch --ntfy my-topic      # + ntfy.sh 手机推送
@@ -81,7 +89,7 @@ node src/cli.js scan                       # 一次性状态表
 node src/cli.js status                     # 持久化的守护状态
 ```
 
-**看板**：`--serve` 给一个实时页面（线程状态、恢复尝试、事件流），只绑 localhost，零依赖；页面随浏览器语言自动中英切换。
+**看板**：`--serve` 给一个实时控制台页面（线程状态、恢复尝试、事件流），只绑 localhost，零依赖；每条线程有**重试/忽略**按钮直接操作。页面随浏览器语言自动中英切换，也可 `?lang=zh` / `?lang=en` 强制。
 
 **通知语言**：默认英文，`AGENTWATCH_LANG=zh` 切换为中文通知（也自动识别系统语言）。
 

@@ -132,7 +132,8 @@ async function main() {
     fs.mkdirSync(stateDir, { recursive: true });
     const cliJs = path.join(__dirname, 'cli.js');
     const fn = cmd === 'install' ? install : uninstall;
-    const r = fn({ nodeBin: process.execPath, cliJs, stateDir, log });
+    const extra = [['--ntfy', a.ntfy], ['--webhook', a.webhook], ['--port', a.port && Number(a.port) !== 8787 ? a.port : null]];
+    const r = fn({ nodeBin: process.execPath, cliJs, stateDir, extra, log });
     if (r.ok) {
       log(cmd === 'install'
         ? `installed via ${r.how} — dashboard http://127.0.0.1:${Number(a.port) || 8787}`
@@ -151,7 +152,7 @@ async function main() {
     if (!childArgs.length) { usage(); process.exit(1); }
     const bin = childArgs[0] === 'codex' ? (a['codex-bin'] || 'codex') : childArgs[0];
     log(`[agentwatch] supervising: ${childArgs.join(' ')}`);
-    if (a.serve) serve({ port: Number(a.port) || 8787, codexHome, dryRun: a['dry-run'], pollMs: rules.pollIntervalMs, monitor, dbwatch, state, events, log });
+    if (a.serve) serve({ port: Number(a.port) || 8787, codexHome, dryRun: a['dry-run'], pollMs: rules.pollIntervalMs, monitor, dbwatch, state, events, log, recover });
     let exited = false;
     const child = spawn(bin, childArgs.slice(1), { stdio: 'inherit', shell: process.platform === 'win32' });
     child.on('exit', code => {
@@ -170,7 +171,7 @@ async function main() {
   if (cmd !== 'watch') { usage(); process.exit(1); }
 
   console.log(`[agentwatch] watching ${monitor.sessionsDir} every ${rules.pollIntervalMs / 1000}s${a['dry-run'] ? ' [dry-run]' : ''}`);
-  if (a.serve) serve({ port: Number(a.port) || 8787, codexHome, dryRun: a['dry-run'], pollMs: rules.pollIntervalMs, monitor, dbwatch, state, events, log });
+  if (a.serve) serve({ port: Number(a.port) || 8787, codexHome, dryRun: a['dry-run'], pollMs: rules.pollIntervalMs, monitor, dbwatch, state, events, log, recover });
   if (a.once) { await cycle(); return; }
   // eslint-disable-next-line no-constant-condition
   for (;;) {

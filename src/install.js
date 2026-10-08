@@ -8,24 +8,29 @@ const { spawnSync, spawn } = require('child_process');
 // now. Three platforms: Windows (schtasks + .bat shim), Linux (systemd --user,
 // cron @reboot fallback), macOS (launchd plist). `install --uninstall` reverts.
 
-const WATCH_ARGS = ['watch', '--serve'];
+function watchArgs(extra = []) {
+  const a = ['watch', '--serve'];
+  for (const [k, v] of extra) if (v) a.push(k, String(v));
+  return a;
+}
 
 function run(cmd, args) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', shell: process.platform === 'win32' });
   return { ok: r.status === 0, out: (r.stdout || '') + (r.stderr || '') };
 }
 
-function startNow(nodeBin, cliJs, logFile, log) {
+function startNow(nodeBin, cliJs, logFile, log, watchArgsArr) {
   // Detached child so the watchdog survives this process exiting.
   const out = fs.openSync(logFile, 'a');
-  const child = spawn(nodeBin, [cliJs, ...WATCH_ARGS], { detached: true, stdio: ['ignore', out, out] });
+  const child = spawn(nodeBin, [cliJs, ...watchArgsArr], { detached: true, stdio: ['ignore', out, out] });
   child.unref();
   log(`started watchdog (pid ${child.pid}), log: ${logFile}`);
 }
 
-function install({ nodeBin, cliJs, stateDir, log }) {
+function install({ nodeBin, cliJs, stateDir, extra = [], log }) {
   const logFile = path.join(stateDir, 'agentwatch.log');
   const p = process.platform;
+  const WATCH_ARGS = watchArgs(extra);
 
   if (p === 'win32') {
     // .bat shim keeps schtasks /tr quoting trivial and adds log redirection.
@@ -74,7 +79,7 @@ function install({ nodeBin, cliJs, stateDir, log }) {
   }
   const r = run('sh', ['-c', `(crontab -l 2>/dev/null | grep -v agentwatch; echo "@reboot ${nodeBin} ${cliJs} ${WATCH_ARGS.join(' ')} >> ${logFile} 2>&1 # agentwatch") | crontab -`]);
   if (!r.ok) return { ok: false, error: 'no systemd or cron available' };
-  startNow(nodeBin, cliJs, logFile, log);
+  startNow(nodeBin, cliJs, logFile, log, WATCH_ARGS);
   return { ok: true, how: 'cron', logFile };
 }
 
