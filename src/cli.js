@@ -8,6 +8,8 @@ const { DbWatch } = require('./dbwatch');
 const { Recover } = require('./recover');
 const { Notifier } = require('./notify');
 const { State } = require('./state');
+const { serve } = require('./dashboard');
+const { spawn } = require('child_process');
 
 function parseArgs(argv) {
   const a = { _: [] };
@@ -15,7 +17,7 @@ function parseArgs(argv) {
     const k = argv[i];
     if (k.startsWith('--')) {
       const name = k.slice(2);
-      if (name === 'dry-run' || name === 'verbose' || name === 'once' || name === 'quiet') a[name] = true;
+      if (name === 'dry-run' || name === 'verbose' || name === 'once' || name === 'quiet' || name === 'serve') a[name] = true;
       else a[name] = argv[++i];
     } else a._.push(k);
   }
@@ -26,6 +28,8 @@ function usage() {
   console.log(`agentwatch — watchdog for long-running AI coding agents
 
   agentwatch watch      Monitor ~/.codex/sessions and auto-resume dead threads
+  agentwatch run CMD..  Run a command (e.g. 'agentwatch run codex exec ...')
+                        under the watchdog; exits when the command exits
   agentwatch scan       One-shot scan, print thread/failure states, exit
   agentwatch status     Print persisted watchdog state
 
@@ -40,6 +44,8 @@ options:
   --once              Run one poll cycle (with watch/scan implied)
   --verbose           Log every scanned line's rule result
   --quiet             Only webhook/ntfy, no console notifications
+  --serve             Local dashboard at http://127.0.0.1:8787 (with watch)
+  --port N            Dashboard port (default 8787)
 `);
 }
 
@@ -57,7 +63,9 @@ async function main() {
   const dbwatch = new DbWatch(codexHome);
   const state = new State(stateDir);
   const notifier = new Notifier({ webhook: a.webhook, ntfy: a.ntfy, quiet: a.quiet });
-  const recover = new Recover({ rules, state, notifier, codexBin: a['codex-bin'] || 'codex', dryRun: !!a['dry-run'], sourceOf: tid => dbwatch.sourceOf(tid) });
+  const events = [];
+  const log = m => { events.push({ ts: Date.now(), msg: m }); if (events.length > 500) events.shift(); console.log(m); };
+  const recover = new Recover({ rules, state, notifier, codexBin: a['codex-bin'] || 'codex', dryRun: !!a['dry-run'], log, sourceOf: tid => dbwatch.sourceOf(tid) });
 
   async function cycle() {
     rules.reload();
@@ -115,9 +123,33 @@ async function main() {
     return;
   }
 
+  if (cmd === 'run') {
+    // Wrap a codex invocation: watchdog in this process, child gets your TTY.
+    // `agentwatch run codex exec "task"` or `agentwatch run codex` (TUI).
+    const childArgs = a._.slice(1);
+    if (!childArgs.length) { usage(); process.exit(1); }
+    const bin = childArgs[0] === 'codex' ? (a['codex-bin'] || 'codex') : childArgs[0];
+    log(`[agentwatch] supervising: ${childArgs.join(' ')}`);
+    if (a.serve) serve({ port: Number(a.port) || 8787, codexHome, dryRun: a['dry-run'], pollMs: rules.pollIntervalMs, monitor, dbwatch, state, events, log });
+    let exited = false;
+    const child = spawn(bin, childArgs.slice(1), { stdio: 'inherit', shell: process.platform === 'win32' });
+    child.on('exit', code => {
+      exited = true;
+      log(`[agentwatch] supervised command exited ${code}; stopping after one final cycle`);
+      setTimeout(() => process.exit(code ?? 0), 2000).unref();
+    });
+    while (!exited) {
+      try { await cycle(); }
+      catch (e) { log('[cycle-error] ' + e.message); }
+      await new Promise(r => setTimeout(r, rules.pollIntervalMs));
+    }
+    return;
+  }
+
   if (cmd !== 'watch') { usage(); process.exit(1); }
 
   console.log(`[agentwatch] watching ${monitor.sessionsDir} every ${rules.pollIntervalMs / 1000}s${a['dry-run'] ? ' [dry-run]' : ''}`);
+  if (a.serve) serve({ port: Number(a.port) || 8787, codexHome, dryRun: a['dry-run'], pollMs: rules.pollIntervalMs, monitor, dbwatch, state, events, log });
   if (a.once) { await cycle(); return; }
   // eslint-disable-next-line no-constant-condition
   for (;;) {

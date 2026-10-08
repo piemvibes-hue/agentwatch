@@ -1,0 +1,8 @@
+{
+  "name": "agentwatch",
+  "version": "0.1.0",
+  "description": "Watchdog for long-running Codex tasks: detects stream disconnects, usage limits, stalls and crashes, then resumes the exact same thread.",
+  "author": "piemvibes-hue",
+  "homepage": "https://github.com/piemvibes-hue/agentwatch",
+  "license": "MIT"
+}

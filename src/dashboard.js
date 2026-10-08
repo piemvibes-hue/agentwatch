@@ -1,0 +1,80 @@
+'use strict';
+const http = require('http');
+
+// Zero-dep status dashboard: `agentwatch watch --serve` exposes a local page
+// showing thread states, detection/recovery events, and notification history.
+
+const PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>agentwatch</title>
+<style>
+:root{color-scheme:dark;--bg:#0d1117;--fg:#c9d1d9;--dim:#8b949e;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--line:#21262d}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;padding:20px;max-width:1100px;margin:auto}
+h1{font-size:18px;display:flex;gap:10px;align-items:center}h1 .dot{width:10px;height:10px;border-radius:50%;background:var(--ok)}
+h1 .dot.dry{background:var(--warn)}
+.meta{color:var(--dim);font-size:12px;margin-bottom:16px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:var(--dim);text-align:left;font-weight:600;border-bottom:1px solid var(--line);padding:6px 8px}
+td{border-bottom:1px solid var(--line);padding:6px 8px;vertical-align:top}
+.tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;border:1px solid var(--line)}
+.t-ok{color:var(--ok)}.t-scheduled,.t-verifying{color:var(--warn)}.t-dead,.t-notify{color:var(--bad)}.t-idle{color:var(--dim)}
+h2{font-size:14px;color:var(--dim);margin:24px 0 8px}
+#events{max-height:280px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12px;white-space:pre-wrap}
+#events div{padding:1px 0}#events .ts{color:var(--dim)}
+a{color:#58a6ff;text-decoration:none}
+</style></head><body>
+<h1><span class="dot" id="dot"></span>agentwatch <span id="mode" style="color:var(--dim);font-size:12px"></span></h1>
+<div class="meta" id="meta"></div>
+<table><thead><tr><th>thread</th><th>title</th><th>source</th><th>state</th><th>last activity</th><th>recovery</th></tr></thead><tbody id="rows"></tbody></table>
+<h2>events</h2><div id="events"></div>
+<script>
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ago=ms=>{if(!ms)return'-';const s=Math.max(0,Math.round((Date.now()-ms)/1000));return s<60?s+'s ago':s<3600?Math.round(s/60)+'m ago':s<86400?Math.round(s/3600)+'h ago':Math.round(s/86400)+'d ago'};
+async function tick(){try{
+const r=await fetch('/api/status');const d=await r.json();
+document.getElementById('dot').className='dot'+(d.dryRun?' dry':'');
+document.getElementById('mode').textContent=d.dryRun?'dry-run':'';
+document.getElementById('meta').textContent='watching '+d.codexHome+' · poll '+Math.round(d.pollMs/1000)+'s · '+d.threads.length+' thread(s) · updated '+new Date().toLocaleTimeString();
+document.getElementById('rows').innerHTML=d.threads.map(t=>{
+ const rec=t.status==='scheduled'?'resume '+new Date(t.scheduledAt).toLocaleTimeString()+' · try '+t.attempts
+  :t.status==='verifying'?'verifying… try '+t.attempts
+  :t.status==='dead'?'gave up after '+t.attempts+' tries'
+  :t.lastRule?('last: '+t.lastRule):'-';
+ return '<tr><td>'+esc(t.id.slice(0,13))+'</td><td>'+esc(t.title||'')+'</td><td>'+esc(t.source||'')+'</td>'
+  +'<td><span class="tag t-'+esc(t.status)+'">'+esc(t.status)+'</span></td><td>'+ago(t.lastActivity)+'</td><td>'+esc(rec)+'</td></tr>'}).join('')||'<tr><td colspan=6 style="color:var(--dim)">no threads seen yet</td></tr>';
+document.getElementById('events').innerHTML=d.events.slice(-200).reverse().map(e=>'<div><span class="ts">'+new Date(e.ts).toLocaleTimeString()+'</span> '+esc(e.msg)+'</div>').join('');
+}catch(e){document.getElementById('meta').textContent='watchdog unreachable? '+e}}
+tick();setInterval(tick,3000);
+</script></body></html>`;
+
+function serve({ port, codexHome, dryRun, pollMs, monitor, dbwatch, state, events, log }) {
+  const api = (res) => {
+    // Merge threads seen via rollout files, sqlite stores, and persisted state.
+    const rows = new Map();
+    const put = (id, extra = {}) => {
+      const cur = rows.get(id) || { id, title: '', source: '', lastActivity: 0 };
+      rows.set(id, Object.assign(cur, extra));
+    };
+    for (const t of monitor.listThreads()) put(t.threadId, { lastActivity: t.lastLineAt || 0 });
+    for (const [tid, ms] of dbwatch.threadSeen) {
+      put(tid, { source: dbwatch.threadSource.get(tid) || '', title: dbwatch.threadTitle.get(tid) || '', lastActivity: Math.max(rows.get(tid)?.lastActivity || 0, ms || 0) });
+    }
+    for (const tid of Object.keys(state.data.threads)) put(tid);
+    const threads = [...rows.values()].map(t => {
+      const st = state.t(t.id);
+      return { ...t, status: st.status, lastRule: st.lastRule, attempts: st.attempts,
+               scheduledAt: st.scheduledAt, verifyUntil: st.verifyUntil || null };
+    }).sort((a, b) => b.lastActivity - a.lastActivity);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ now: Date.now(), codexHome, dryRun: !!dryRun, pollMs, threads, events }));
+  };
+  const srv = http.createServer((req, res) => {
+    if (req.url.startsWith('/api/status')) return api(res);
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(PAGE);
+  });
+  srv.listen(port, '127.0.0.1', () => log(`[serve] dashboard http://127.0.0.1:${port}`));
+  return srv;
+}
+
+module.exports = { serve };

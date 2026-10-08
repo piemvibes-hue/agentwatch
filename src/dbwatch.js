@@ -81,6 +81,7 @@ class DbWatch {
     this.goalStatus = new Map(); // "threadId/goalId" -> status
     this.threadSeen = new Map(); // threadId -> updated_ms
     this.threadSource = new Map(); // threadId -> threads.source (exec/app/...)
+    this.threadTitle = new Map(); // threadId -> threads.title
     this.turnStatus = new Map(); // turnId -> {threadId,status,startedAt}
     this.disabledReason = null;
   }
@@ -142,6 +143,7 @@ class DbWatch {
 
     for (const t of d.threads) {
       this.threadSource.set(t.id, t.source);
+      if (t.title) this.threadTitle.set(t.id, t.title);
       const prev = this.threadSeen.get(t.id) || 0;
       if (t.updated_ms > prev) {
         this.threadSeen.set(t.id, t.updated_ms);

@@ -53,12 +53,19 @@ Two detection layers (structured first, text as fallback):
 # requires Node 18+, and `codex` on PATH (ships with Codex CLI / Desktop)
 
 node src/cli.js watch                      # run the watchdog
+node src/cli.js watch --serve              # + local dashboard http://127.0.0.1:8787
 node src/cli.js watch --ntfy my-topic      # + push notifications via ntfy.sh
 node src/cli.js watch --webhook https://…  # + POST {text,title,detail} JSON
 node src/cli.js watch --dry-run            # detect & schedule, never execute
+node src/cli.js run codex exec "…"         # wrap a codex command under the watchdog
+node src/cli.js run codex                  # wrap the interactive TUI too
 node src/cli.js scan                       # one-shot status table
 node src/cli.js status                     # persisted watchdog state
 ```
+
+**Dashboard**: `--serve` gives you a live page (thread states, recovery attempts, event feed) at http://127.0.0.1:8787 — localhost only, zero deps, no auth needed on loopback.
+
+**Codex plugin**: this repo doubles as a [Codex plugin](https://developers.openai.com/codex/plugins) — `.codex-plugin/plugin.json` + `skills/agentwatch/` teach any Codex agent how to supervise its own long tasks. Add the repo to your Codex plugins and it can call `agentwatch run`/`scan`/`status` itself.
 
 First real-world run on your machine:
 
@@ -123,5 +130,6 @@ Uses a fake `codex` shim + synthetic rollouts — no Codex install needed.
 ## Roadmap
 
 - [ ] Claude Code / Gemini CLI adapters (same monitor, different stores)
-- [ ] `agentwatch run -- <cmd>` supervisor mode for `codex exec` / arbitrary jobs
+- [x] `agentwatch run <cmd>` supervisor mode for `codex exec` / interactive TUI
+- [x] local dashboard (`watch --serve`)
 - [ ] RunCheck integration: every recovery event reports to a run-outcome API
