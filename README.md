@@ -17,6 +17,8 @@ Leave a Codex task running overnight. When the stream disconnects, the usage lim
 
 <p align="center"><img src="docs/demo.gif" alt="agentwatch rescues two dead codex threads" width="720"></p>
 
+<p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
+
 ## How it works
 
 Two detection layers (structured first, text as fallback):

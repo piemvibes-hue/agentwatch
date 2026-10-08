@@ -25,23 +25,35 @@ a{color:#58a6ff;text-decoration:none}
 </style></head><body>
 <h1><span class="dot" id="dot"></span>agentwatch <span id="mode" style="color:var(--dim);font-size:12px"></span></h1>
 <div class="meta" id="meta"></div>
-<table><thead><tr><th>thread</th><th>title</th><th>source</th><th>state</th><th>last activity</th><th>recovery</th></tr></thead><tbody id="rows"></tbody></table>
-<h2>events</h2><div id="events"></div>
+<table><thead><tr><th id="h1">thread</th><th id="h2">title</th><th id="h3">source</th><th id="h4">state</th><th id="h5">last activity</th><th id="h6">recovery</th></tr></thead><tbody id="rows"></tbody></table>
+<h2 id="evh">events</h2><div id="events"></div>
 <script>
+const L=(navigator.language||'en').toLowerCase().startsWith('zh')?{
+ thread:'线程',title:'标题',source:'来源',state:'状态',lasta:'最近活动',recovery:'恢复',
+ watching:'监视中',thr:'个线程',updated:'更新于',events:'事件',empty:'还没有看到线程',
+ resume:'续跑于',try:'第',verifying:'验证中… 第',gaveup:'已放弃（',tries:'次）',last:'上次：',
+ sa:'秒前',ma:'分钟前',ha:'小时前',da:'天前'
+}:{
+ thread:'thread',title:'title',source:'source',state:'state',lasta:'last activity',recovery:'recovery',
+ watching:'watching',thr:'thread(s)',updated:'updated',events:'events',empty:'no threads seen yet',
+ resume:'resume ',try:'try ',verifying:'verifying… try ',gaveup:'gave up after ',tries:' tries',last:'last: ',
+ sa:'s ago',ma:'m ago',ha:'h ago',da:'d ago'
+};
+['h1','h2','h3','h4','h5','h6','evh'].forEach((id,i)=>document.getElementById(id).textContent=[L.thread,L.title,L.source,L.state,L.lasta,L.recovery,L.events][i]);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const ago=ms=>{if(!ms)return'-';const s=Math.max(0,Math.round((Date.now()-ms)/1000));return s<60?s+'s ago':s<3600?Math.round(s/60)+'m ago':s<86400?Math.round(s/3600)+'h ago':Math.round(s/86400)+'d ago'};
+const ago=ms=>{if(!ms)return'-';const s=Math.max(0,Math.round((Date.now()-ms)/1000));return s<60?s+L.sa:s<3600?Math.round(s/60)+L.ma:s<86400?Math.round(s/3600)+L.ha:Math.round(s/86400)+L.da};
 async function tick(){try{
 const r=await fetch('/api/status');const d=await r.json();
 document.getElementById('dot').className='dot'+(d.dryRun?' dry':'');
 document.getElementById('mode').textContent=d.dryRun?'dry-run':'';
-document.getElementById('meta').textContent='watching '+d.codexHome+' · poll '+Math.round(d.pollMs/1000)+'s · '+d.threads.length+' thread(s) · updated '+new Date().toLocaleTimeString();
+document.getElementById('meta').textContent=L.watching+' '+d.codexHome+' · poll '+Math.round(d.pollMs/1000)+'s · '+d.threads.length+' '+L.thr+' · '+L.updated+' '+new Date().toLocaleTimeString();
 document.getElementById('rows').innerHTML=d.threads.map(t=>{
- const rec=t.status==='scheduled'?'resume '+new Date(t.scheduledAt).toLocaleTimeString()+' · try '+t.attempts
-  :t.status==='verifying'?'verifying… try '+t.attempts
-  :t.status==='dead'?'gave up after '+t.attempts+' tries'
-  :t.lastRule?('last: '+t.lastRule):'-';
+ const rec=t.status==='scheduled'?L.resume+new Date(t.scheduledAt).toLocaleTimeString()+' · '+L.try+t.attempts
+  :t.status==='verifying'?L.verifying+t.attempts
+  :t.status==='dead'?L.gaveup+t.attempts+L.tries
+  :t.lastRule?(L.last+t.lastRule):'-';
  return '<tr><td>'+esc(t.id.slice(0,13))+'</td><td>'+esc(t.title||'')+'</td><td>'+esc(t.source||'')+'</td>'
-  +'<td><span class="tag t-'+esc(t.status)+'">'+esc(t.status)+'</span></td><td>'+ago(t.lastActivity)+'</td><td>'+esc(rec)+'</td></tr>'}).join('')||'<tr><td colspan=6 style="color:var(--dim)">no threads seen yet</td></tr>';
+  +'<td><span class="tag t-'+esc(t.status)+'">'+esc(t.status)+'</span></td><td>'+ago(t.lastActivity)+'</td><td>'+esc(rec)+'</td></tr>'}).join('')||'<tr><td colspan=6 style="color:var(--dim)">'+L.empty+'</td></tr>';
 document.getElementById('events').innerHTML=d.events.slice(-200).reverse().map(e=>'<div><span class="ts">'+new Date(e.ts).toLocaleTimeString()+'</span> '+esc(e.msg)+'</div>').join('');
 }catch(e){document.getElementById('meta').textContent='watchdog unreachable? '+e}}
 tick();setInterval(tick,3000);

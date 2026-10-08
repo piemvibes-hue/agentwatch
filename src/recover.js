@@ -1,5 +1,6 @@
 'use strict';
 const { spawn } = require('child_process');
+const { t } = require('./i18n');
 
 // Recovery engine: decides actions per rule, schedules them, executes
 // `codex queue`, then verifies the thread actually resumed producing events.
@@ -33,7 +34,7 @@ class Recover {
         st.status = 'notify';
         st.lastRule = rule.name;
         this.state.save();
-        this.notifier.send(`agentwatch: ${rule.name} on ${threadId.slice(0, 8)}`, text.slice(0, 300));
+        this.notifier.send(t('alert', rule.name, threadId.slice(0, 8)), text.slice(0, 300));
         return;
       case 'wait_reset': {
         const reset = this.rules.extractReset(rule, text);
@@ -71,8 +72,8 @@ class Recover {
     this.state.save();
     this.log(`[scheduled] ${threadId.slice(0, 8)} ${rule.name} attempt#${st.attempts} at ${new Date(at).toISOString()}`);
     if (st.attempts > 1) return;
-    this.notifier.send(`agentwatch: detected ${rule.name} on thread ${threadId.slice(0, 8)}`,
-      `resume scheduled ${new Date(at).toLocaleTimeString()} (attempt ${st.attempts}/${this.rules.maxAttempts})`);
+    this.notifier.send(t('detected', rule.name, threadId.slice(0, 8)),
+      t('scheduled', new Date(at).toLocaleTimeString(), st.attempts, this.rules.maxAttempts));
   }
 
   // Called every poll cycle.
@@ -101,8 +102,8 @@ class Recover {
           st.status = 'dead';
           st.updatedAt = now;
           this.state.save();
-          this.notifier.send(`agentwatch: GAVE UP on ${threadId.slice(0, 8)}`,
-            `${st.lastRule}: ${st.attempts} resume attempts produced no activity. Manual check needed.`);
+          this.notifier.send(t('gaveup', threadId.slice(0, 8)),
+            t('gaveupDetail', st.lastRule, st.attempts));
         }
       }
     }
@@ -169,7 +170,7 @@ class Recover {
       st.scheduledAt = null;
       st.updatedAt = Date.now();
       this.state.save();
-      this.notifier.send(`agentwatch: ${threadId.slice(0, 8)} recovered`, 'thread is producing events again');
+      this.notifier.send(t('recovered', threadId.slice(0, 8)), t('recoveredDetail'));
       this.log(`[recovered] ${threadId.slice(0, 8)}`);
     } else if (st.status === 'scheduled') {
       // User resumed it manually — stand down.
